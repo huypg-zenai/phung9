@@ -1,0 +1,364 @@
+{
+ "env": {
+  "torch": "2.13.0+cu129",
+  "triton": "3.7.1",
+  "gpu": "NVIDIA H200",
+  "cc": "(9, 0)",
+  "date": "2026-10-18 12:49:32 UTC",
+  "sglang": "0.5.6.post3.dev9160+g1cf2b8c54",
+  "today_verify_from": "installed sglang",
+  "today_conv_from": "sglang.kernels.ops.mamba.causal_conv1d_triton",
+  "today_split_from": "sglang fused_qkv_split_gdn_prefill"
+ },
+ "verify": {
+  "enabled": true,
+  "best": "V0_bv32w1",
+  "best_cfg": {
+   "name": "V0_bv32w1",
+   "BV": 32,
+   "nw": 1,
+   "ns": 3,
+   "unroll": 0,
+   "gfast": 0,
+   "store": 0
+  },
+  "note": "enabled by setup_kern.sh (DEEPDIVE2 sec 3: bitwise replica, rejected only by the 3% bar)"
+ },
+ "conv": {
+  "arms": {
+   "c128w4": {
+    "cfg": {
+     "name": "c128w4",
+     "BLOCK_C": 128,
+     "nw": 4
+    },
+    "ident": {
+     "c128w4 outputs": {
+      "bitwise_pct": 100.0,
+      "max_abs_diff": 0.0
+     },
+     "c128w4 window buffer": {
+      "bitwise_pct": 100.0,
+      "max_abs_diff": 0.0
+     },
+     "c128w4 conv_state after": {
+      "bitwise_pct": 100.0,
+      "max_abs_diff": 0.0
+     }
+    },
+    "kernel_info": {
+     "regs": 160,
+     "spills": 0,
+     "shared": null
+    },
+    "all_bitwise": true,
+    "ms": 2.6895715594291687,
+    "mode": "graph"
+   },
+   "c256w4": {
+    "cfg": {
+     "name": "c256w4",
+     "BLOCK_C": 256,
+     "nw": 4
+    },
+    "ident": {
+     "c256w4 outputs": {
+      "bitwise_pct": 100.0,
+      "max_abs_diff": 0.0
+     },
+     "c256w4 window buffer": {
+      "bitwise_pct": 100.0,
+      "max_abs_diff": 0.0
+     },
+     "c256w4 conv_state after": {
+      "bitwise_pct": 100.0,
+      "max_abs_diff": 0.0
+     }
+    },
+    "kernel_info": {
+     "regs": 255,
+     "spills": 2,
+     "shared": null
+    },
+    "all_bitwise": true,
+    "ms": 2.617365618009825,
+    "mode": "graph"
+   },
+   "c256w8": {
+    "cfg": {
+     "name": "c256w8",
+     "BLOCK_C": 256,
+     "nw": 8
+    },
+    "ident": {
+     "c256w8 outputs": {
+      "bitwise_pct": 100.0,
+      "max_abs_diff": 0.0
+     },
+     "c256w8 window buffer": {
+      "bitwise_pct": 100.0,
+      "max_abs_diff": 0.0
+     },
+     "c256w8 conv_state after": {
+      "bitwise_pct": 100.0,
+      "max_abs_diff": 0.0
+     }
+    },
+    "kernel_info": {
+     "regs": 150,
+     "spills": 0,
+     "shared": null
+    },
+    "all_bitwise": true,
+    "ms": 4.092254638671875,
+    "mode": "graph"
+   },
+   "c512w8": {
+    "cfg": {
+     "name": "c512w8",
+     "BLOCK_C": 512,
+     "nw": 8
+    },
+    "ident": {
+     "c512w8 outputs": {
+      "bitwise_pct": 100.0,
+      "max_abs_diff": 0.0
+     },
+     "c512w8 window buffer": {
+      "bitwise_pct": 100.0,
+      "max_abs_diff": 0.0
+     },
+     "c512w8 conv_state after": {
+      "bitwise_pct": 100.0,
+      "max_abs_diff": 0.0
+     }
+    },
+    "kernel_info": {
+     "regs": 244,
+     "spills": 0,
+     "shared": null
+    },
+    "all_bitwise": true,
+    "ms": 3.365516152875177,
+    "mode": "graph"
+   },
+   "c64w2": {
+    "cfg": {
+     "name": "c64w2",
+     "BLOCK_C": 64,
+     "nw": 2
+    },
+    "ident": {
+     "c64w2 outputs": {
+      "bitwise_pct": 100.0,
+      "max_abs_diff": 0.0
+     },
+     "c64w2 window buffer": {
+      "bitwise_pct": 100.0,
+      "max_abs_diff": 0.0
+     },
+     "c64w2 conv_state after": {
+      "bitwise_pct": 100.0,
+      "max_abs_diff": 0.0
+     }
+    },
+    "kernel_info": {
+     "regs": 104,
+     "spills": 0,
+     "shared": null
+    },
+    "all_bitwise": true,
+    "ms": 1.8439932328004103,
+    "mode": "graph",
+    "ms_rep": 1.8461046127172618
+   },
+   "c128w2": {
+    "cfg": {
+     "name": "c128w2",
+     "BLOCK_C": 128,
+     "nw": 2
+    },
+    "ident": {
+     "c128w2 outputs": {
+      "bitwise_pct": 100.0,
+      "max_abs_diff": 0.0
+     },
+     "c128w2 window buffer": {
+      "bitwise_pct": 100.0,
+      "max_abs_diff": 0.0
+     },
+     "c128w2 conv_state after": {
+      "bitwise_pct": 100.0,
+      "max_abs_diff": 0.0
+     }
+    },
+    "kernel_info": {
+     "regs": 248,
+     "spills": 0,
+     "shared": null
+    },
+    "all_bitwise": true,
+    "ms": 2.406833589076996,
+    "mode": "graph"
+   },
+   "c1024w8": {
+    "cfg": {
+     "name": "c1024w8",
+     "BLOCK_C": 1024,
+     "nw": 8
+    },
+    "ident": {
+     "c1024w8 outputs": {
+      "bitwise_pct": 100.0,
+      "max_abs_diff": 0.0
+     },
+     "c1024w8 window buffer": {
+      "bitwise_pct": 100.0,
+      "max_abs_diff": 0.0
+     },
+     "c1024w8 conv_state after": {
+      "bitwise_pct": 100.0,
+      "max_abs_diff": 0.0
+     }
+    },
+    "kernel_info": {
+     "regs": 255,
+     "spills": 194,
+     "shared": null
+    },
+    "all_bitwise": true,
+    "ms": 4.5566902841840475,
+    "mode": "graph"
+   }
+  },
+  "inplace": false,
+  "write_state": true,
+  "arith_trials": {
+   "prod_f32=0,silu=0": {
+    "conv[prod_f32=0,silu=0] outputs": {
+     "bitwise_pct": 100.0,
+     "max_abs_diff": 0.0
+    },
+    "conv[prod_f32=0,silu=0] dedup window buffer": {
+     "bitwise_pct": 100.0,
+     "max_abs_diff": 0.0
+    },
+    "conv[prod_f32=0,silu=0] conv_state after": {
+     "bitwise_pct": 100.0,
+     "max_abs_diff": 0.0
+    },
+    "conv[prod_f32=0,silu=0] dense-layout outputs": {
+     "bitwise_pct": 100.0,
+     "max_abs_diff": 0.0
+    },
+    "conv[prod_f32=0,silu=0] dense window buffer": {
+     "bitwise_pct": 100.0,
+     "max_abs_diff": 0.0
+    },
+    "conv[prod_f32=0,silu=0] dense conv_state after": {
+     "bitwise_pct": 100.0,
+     "max_abs_diff": 0.0
+    }
+   },
+   "prod_f32=1,silu=0": {
+    "conv[prod_f32=1,silu=0] outputs": {
+     "bitwise_pct": 65.07652282714844,
+     "max_abs_diff": 0.03125
+    },
+    "conv[prod_f32=1,silu=0] dedup window buffer": {
+     "bitwise_pct": 100.0,
+     "max_abs_diff": 0.0
+    },
+    "conv[prod_f32=1,silu=0] conv_state after": {
+     "bitwise_pct": 100.0,
+     "max_abs_diff": 0.0
+    },
+    "conv[prod_f32=1,silu=0] dense-layout outputs": {
+     "bitwise_pct": 65.07652282714844,
+     "max_abs_diff": 0.03125
+    },
+    "conv[prod_f32=1,silu=0] dense window buffer": {
+     "bitwise_pct": 100.0,
+     "max_abs_diff": 0.0
+    },
+    "conv[prod_f32=1,silu=0] dense conv_state after": {
+     "bitwise_pct": 100.0,
+     "max_abs_diff": 0.0
+    }
+   },
+   "prod_f32=0,silu=1": {
+    "conv[prod_f32=0,silu=1] outputs": {
+     "bitwise_pct": 100.0,
+     "max_abs_diff": 0.0
+    },
+    "conv[prod_f32=0,silu=1] dedup window buffer": {
+     "bitwise_pct": 100.0,
+     "max_abs_diff": 0.0
+    },
+    "conv[prod_f32=0,silu=1] conv_state after": {
+     "bitwise_pct": 100.0,
+     "max_abs_diff": 0.0
+    },
+    "conv[prod_f32=0,silu=1] dense-layout outputs": {
+     "bitwise_pct": 100.0,
+     "max_abs_diff": 0.0
+    },
+    "conv[prod_f32=0,silu=1] dense window buffer": {
+     "bitwise_pct": 100.0,
+     "max_abs_diff": 0.0
+    },
+    "conv[prod_f32=0,silu=1] dense conv_state after": {
+     "bitwise_pct": 100.0,
+     "max_abs_diff": 0.0
+    }
+   },
+   "prod_f32=1,silu=1": {
+    "conv[prod_f32=1,silu=1] outputs": {
+     "bitwise_pct": 65.07652282714844,
+     "max_abs_diff": 0.03125
+    },
+    "conv[prod_f32=1,silu=1] dedup window buffer": {
+     "bitwise_pct": 100.0,
+     "max_abs_diff": 0.0
+    },
+    "conv[prod_f32=1,silu=1] conv_state after": {
+     "bitwise_pct": 100.0,
+     "max_abs_diff": 0.0
+    },
+    "conv[prod_f32=1,silu=1] dense-layout outputs": {
+     "bitwise_pct": 65.07652282714844,
+     "max_abs_diff": 0.03125
+    },
+    "conv[prod_f32=1,silu=1] dense window buffer": {
+     "bitwise_pct": 100.0,
+     "max_abs_diff": 0.0
+    },
+    "conv[prod_f32=1,silu=1] dense conv_state after": {
+     "bitwise_pct": 100.0,
+     "max_abs_diff": 0.0
+    }
+   }
+  },
+  "arith": {
+   "prod_f32": 0,
+   "silu": 0
+  },
+  "copy_x_same_bytes_ms": 0.3307584242557916,
+  "today_ms": 5.167309484983745,
+  "today_ms_rep": 5.177445060328433,
+  "noise_ms": 0.010135575344688341,
+  "best": "c64w2",
+  "best_cfg": {
+   "name": "c64w2",
+   "BLOCK_C": 64,
+   "nw": 2
+  },
+  "enabled": true
+ },
+ "fused": {
+  "arms": {},
+  "note": "skipped: needs today's verify + conv, a matching conv arithmetic, and a conv that does not write conv_state during verify (fused CTAs share q/k channels, so an in-kernel state write would race)"
+ },
+ "expected_save_ms": 3.323316252183335,
+ "wall_s": 50.770801305770874
+}

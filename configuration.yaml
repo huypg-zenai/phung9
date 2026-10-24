@@ -1,0 +1,234 @@
+api:
+  host: "0.0.0.0"
+  port: 10006
+  debug: true
+
+pipeline:
+  batch_time_budget: 3000
+  candidate_deadline_s: 2100
+  prompt_timeout: 600.0
+  use_planner: false
+  render_from_object: true
+  refinement_enabled: false
+  orientation:
+    enabled: true
+    img_size: 512
+  seed_offset: 14000042
+  # Warm-up coder throughput probe: 48 text-only code requests x 512 tokens, aggregate output tok/s.
+  # min_tps 0 = measure and log only. CALIBRATE before enabling: run one healthy 4xH200 pod, read
+  # "[Coder probe] ... tok/s" from pipeline.log, set min_tps to ~0.8x that value.
+  coder_probe:
+    enabled: true
+    concurrency: 48
+    max_tokens: 512
+    min_tps: 0
+
+preflight:
+  min_tflops: 30
+  min_stream48_gbps: 0
+  min_power_limit_w: 700
+
+benchmark: true
+warmup: true
+
+llm_clients:
+  openrouter:
+    enabled: false
+    base_url: "https://openrouter.ai/api/v1"
+    api_key_env: "OPENROUTER_API_KEY"
+  coder-instance:
+    enabled: true
+    base_url: "http://localhost:8001/v1"
+    api_key: "local"
+    request_timeout_s: 900
+    vllm:
+      model: "cont1037/UtevoLux-3.6-27B"
+      revision: "882b3c5e002014ea691f2f45b7e60c5efea9ca90"
+      gpu_ids: "0,1"
+      tensor_parallel_size: 1
+      data_parallel_size: 2
+      vllm_bin: "/opt/prefetch/shim_a2b.sh"
+      gpu_memory_utilization: 0.9
+      max_model_len: 81920
+      max_num_seqs: 256
+      extra_args: ["--sgl", "--speculative-algorithm", "DFLASH", "--speculative-draft-model-path", "cont1037/UtevoLux-3.6-27B-DFlash-ft", "--speculative-draft-model-revision", "815759c3950913a548b56a93d90f7bafcbdee7be", "--speculative-num-draft-tokens", "8", "--mamba-radix-cache-strategy", "extra_buffer_lazy", "--mamba-ssm-dtype", "bfloat16", "--max-mamba-cache-size", "240", "--max-running-requests", "256", "--chunked-prefill-size", "8192", "--enable-metrics", "--random-seed", "42", "--burst-glm", "0.80", "--enable-memory-saver", "--enable-weights-cpu-backup", "--enable-draft-weights-cpu-backup"]
+    # [pgh17 mix] (pipeline_service/pgh_mix.py): used ONLY when PGH_MIX_CODERS names "utevo" (else ignored = exactly pgh16)
+    mix:
+      name: "utevo"
+      gpu_ids: "0"
+      data_parallel_size: 1
+  # [pgh17 mix] the 2nd coder: AmberKite@a6018507 + AK-DFlash@285795f0 (= pgh7's coder, its flags verbatim). enabled: false =
+  # never started unless PGH_MIX_CODERS names "ak" (pgh_mix.apply_cfg enables it and puts it on mix.gpu_ids). Its prompt is
+  # chosen per coder by PGH_MIX_PROMPTS (default ak=pgh7: the prompt AmberKite was tuned on; UtevoLux keeps ES's).
+  # Port 8051: 8003-8010 = render sidecars, 8020 = judge b, 8031+ = burst GLMs.
+  coder-instance-b:
+    enabled: false
+    base_url: "http://localhost:8051/v1"
+    api_key: "local"
+    request_timeout_s: 900
+    vllm:
+      model: "cont1037/Qwen-3.6-27B-AmberKite"
+      revision: "a60185070e050f24b070f9695bfaac1b430c4bcd"
+      gpu_ids: "1"
+      tensor_parallel_size: 1
+      data_parallel_size: 1
+      vllm_bin: "/opt/prefetch/shim_a2b.sh"
+      gpu_memory_utilization: 0.9
+      max_model_len: 81920
+      max_num_seqs: 256
+      extra_args: ["--sgl", "--speculative-algorithm", "DFLASH", "--speculative-draft-model-path", "cont1037/Qwen-3.6-27B-AmberKite-DFlash", "--speculative-draft-model-revision", "285795f0143bcb7a35efc4647a70bff22bb90b47", "--speculative-num-draft-tokens", "8", "--mamba-radix-cache-strategy", "extra_buffer_lazy", "--mamba-ssm-dtype", "bfloat16", "--max-mamba-cache-size", "240", "--max-running-requests", "256", "--chunked-prefill-size", "8192", "--enable-metrics", "--random-seed", "42", "--burst-glm", "0.80", "--enable-memory-saver", "--enable-weights-cpu-backup", "--enable-draft-weights-cpu-backup"]
+    mix:
+      name: "ak"
+      gpu_ids: "1"
+      data_parallel_size: 1
+  judge-critic-instance:
+    enabled: true
+    base_url: "http://localhost:8002/v1"
+    api_key: "local"
+    request_timeout_s: 300
+    vllm:
+      model: "zai-org/GLM-4.6V-Flash"
+      revision: "411bb4d77144a3f03accbf4b780f5acb8b7cde4e" 
+      gpu_ids: "2"
+      tensor_parallel_size: 1
+      data_parallel_size: 1
+      gpu_memory_utilization: 0.81
+      max_model_len: 81920
+      max_num_seqs: 64
+      extra_args: ["--max-num-batched-tokens", "16384"]
+      vllm_bin: "/opt/jf/vllm_enc.sh"
+      trust_remote_code: true
+      reasoning_parser: null
+  judge-critic-instance-b:
+    enabled: true
+    base_url: "http://localhost:8020/v1"
+    api_key: "local"
+    request_timeout_s: 300
+    vllm:
+      model: "zai-org/GLM-4.6V-Flash"
+      revision: "411bb4d77144a3f03accbf4b780f5acb8b7cde4e" 
+      gpu_ids: "3"
+      tensor_parallel_size: 1
+      data_parallel_size: 1
+      gpu_memory_utilization: 0.81
+      max_model_len: 81920
+      max_num_seqs: 64
+      extra_args: ["--max-num-batched-tokens", "16384"]
+      vllm_bin: "/opt/jf/vllm_enc.sh"
+      trust_remote_code: true
+      reasoning_parser: null
+
+embedder:
+  model_id: "cont1037/dinov3-vits16-pretrain-lvd1689m"
+  revision: "eba5a4160c01e50cc20d95a97225b0e75fe5b2e7"
+
+actors:
+  planner:
+    client: "coder-instance"
+    model: "cont1037/UtevoLux-3.6-27B"
+    workers: 256
+    queue_size: 128
+    max_tokens: 32768
+    temperature: 0.6
+    top_p: 0.95
+    top_k: 20
+    min_p: 0.0
+    presence_penalty: 0.0
+    repetition_penalty: 1.0
+    seed: 42
+    reasoning_effort: "medium"
+    enable_thinking: false
+    providers:
+      order: []
+      allow_fallbacks: true
+  coder:
+    client: "coder-instance"
+    model: "cont1037/UtevoLux-3.6-27B"
+    workers: 128
+    queue_size: 64
+    max_tokens: 24576
+    temperature: 0.7
+    top_p: 0.95
+    top_k: 20
+    min_p: 0.0
+    presence_penalty: 0.0
+    repetition_penalty: 1.0
+    seed: 42
+    enable_thinking: false
+    multimodal: true
+    ensemble_size: 68
+    ensemble_temperature: 0.7
+    providers:
+      order: []
+      allow_fallbacks: true
+  patcher:
+    workers: 64
+    queue_size: 64
+  critic:
+    client: "judge-critic-instance"
+    model: "zai-org/GLM-4.6V-Flash"
+    workers: 128
+    queue_size: 64
+    max_tokens: 6144
+    temperature: 0.6
+    top_p: 0.95
+    top_k: 20
+    min_p: 0.0
+    presence_penalty: 0.0
+    repetition_penalty: 1.0
+    seed: 42
+    reasoning_effort: "medium"
+    enable_thinking: false
+    ensemble_size: 1
+    providers:
+      order: []
+      allow_fallbacks: true
+  judge:
+    client: "judge-critic-instance"
+    extra_clients: ["judge-critic-instance-b"]
+    s1_early_stop:
+      enabled: true
+      angles: 2
+      min_gap: 2.0
+      single_angle_min_gap: 2.5
+      max_round: 4
+    model: "zai-org/GLM-4.6V-Flash"
+    workers: 48
+    queue_size: 48
+    max_tokens: 8192
+    temperature: 0.0
+    seed: 42
+    max_stage: 3
+    providers:
+      order: []
+      allow_fallbacks: true
+  checker:
+    workers: 32
+    queue_size: 32
+  renderer:
+    workers: 16
+    queue_size: 32
+
+event_bus:
+  max_iter: 2
+  task_deadline_s: 2700
+  score_threshold: 0.55
+
+js_checker:
+  execution_timeout_ms: 5000
+  node_binary: "node"
+
+renderer:
+  sidecar_host: "127.0.0.1"
+  sidecar_port: 8003
+  startup_timeout_s: 60.0
+  request_timeout_s: 90.0
+  node_binary: "/opt/raff/node_aff.sh"
+  img_size: 1024
+  grid_gap: 5
+  bg_color: null
+  lighting: neutral
+  sidecar_count: 8
+  pool_size: 2
+  render_timeout_ms: 60000
+  protocol_timeout_ms: 60000

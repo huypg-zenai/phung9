@@ -1,0 +1,162 @@
+dflash-seed: per-request seeded sampling on the SGLang DFLASH verify/accept path (mirrors EAGLE)
+=================================================================================================
+Target: SGLang @1cf2b8c54d81 (= the contest image's sglang 0.5.6.post3.dev9160+g1cf2b8c54; local copy
+= that image's python/ tree).
+STATUS: PREPARED, NOT APPLIED to any submission. Apply in a container only via apply_seed_shim.sh.
+Apply by hand: repo root `git apply -p1 dflash_seed.patch`; installed tree `patch -p2 -d <site-packages> < dflash_seed.patch`.
+
+WHY. With T>0 the DFLASH verify draws its rejection coins and its final-token coin from torch.rand, i.e. from the
+one global CUDA generator shared by every request in the batch, consumed in batch order
+(dflash_utils.py:886-900 when uniform_samples is None; dflash_worker_v2.py:2028 never passes coins). The OpenAI
+"seed" reaches SamplingBatchInfo.sampling_seed only under --enable-deterministic-inference, and even then only
+EAGLE uses it (eagle_utils.py:583-643 _seeded_verify_coins). So two runs with the same seed diverge at the
+first free token (CRITIC_B E2: 0/2,173 drafts identical, first differing byte p50 = 106).
+
+WHAT. 3 files, 6 hunks:
+ H1 sampling_batch_info.py  `import os` (needed by H2).
+ H2 sampling_batch_info.py  from_schedule_batch: new local `seeded_sampling = enable_deterministic or
+    env SGLANG_DFLASH_SEEDED_SAMPLING == "1"`. Default ("0" / unset) = stock behaviour exactly.
+ H3 sampling_batch_info.py  build the per-request sampling_seed tensor when `seeded_sampling` (was:
+    only when enable_deterministic). Requests without a seed get 42, the stock deterministic-mode default.
+    Side effect (intended): the normal Sampler, which in DFLASH only samples the FIRST token after
+    prefill/extend, now uses multinomial_with_seed(seed, position). That sampler asserts
+    sampling_seed is None on the flashinfer backend when top_k/top_p are used, so H2's env mode REQUIRES
+    `--sampling-backend pytorch` (apply_seed_shim.sh refuses to start without it, unless
+    --enable-deterministic-inference is given, which forces pytorch itself). Cost: the pytorch sampler
+    sorts the vocab, but only for one token per request (decode tokens all come from the verify path).
+    Also stock: seeded sampling refuses min_p > 0 (sampler.py:590 assert); our coder uses min_p 0.
+ H4 dflash_utils.py  new helper dflash_seeded_verify_coins(sampling_info, seq_lens, draft_token_num,
+    device) -> (coins[bs, draft_token_num], final_coins[bs]) from EAGLE's own _seeded_verify_coins
+    (murmur_hash32(seed, seq_len, column) / 2^32-1, clamped < 1), or (None, None) when no sampling_seed.
+    Reusing the EAGLE function (lazy import; eagle_utils is already imported by the scheduler) keeps one
+    coin scheme in the codebase. compute_dflash_sampling_correct_drafts_and_bonus is NOT changed: it
+    already accepts uniform_samples / uniform_samples_for_final_sampling and falls back to torch.rand on None.
+ H5 dflash_worker_v2.py  import the helper.
+ H6 dflash_worker_v2.py  in the T>0 chain-verify branch only, compute the seeded coins with
+    seq_lens = prefix_lens (the committed length before this verify, the same tensor the greedy Triton
+    path uses for new_seq_lens; EAGLE uses batch.seq_lens at the same point) and pass them in.
+
+EXACTNESS (same distribution as unseeded, just seeded). The accept rule, the target probs, draft_probs = 0
+(target-only chain verify) and the kernel tree_speculative_sampling_target_only are untouched; only the
+source of the U[0,1) coins changes. Speculative sampling is exact iff, at each step, the coins are U[0,1),
+mutually independent and independent of the draft tokens and of earlier coins of the same request. The hash
+key (seed, prefix_len, column) satisfies this: columns 0..B-1 are the per-position coins and column B the
+final coin (distinct keys within a step); prefix_len strictly increases every step (each verify commits
+>= 1 token), so no key repeats across steps; the first-token sampler uses (seed, L-1, vocab id) with
+L = prompt length, while every verify uses prefix_len >= L, so no key is shared with it either. Coins are
+quantized to 2^-32 then rounded to float32 (torch.rand float32 is 2^-24 grained), clamped below 1.0 (the
+EAGLE fix: a 1.0 coin can pick a zero-probability token). Residual non-uniformity ~1e-7 (float32), the
+same as upstream's EAGLE/deterministic path. Requests that share a seed (seed only, any prompt) share the
+coin stream; the pipeline gives every draft its own seed (task.seed + seed_offset + k).
+
+NOT COVERED (by design, keep the patch minimal):
+ - The DFlash2 "selector" drafter (models/dflash.py DFlash2DraftModel; dflash_worker_v2.py:246 in-graph
+   philox self.uniforms.uniform_(), :973 torch.rand, :1001 accept_sampling). z-lab/Qwen3.6-27B-DFlash and
+   our merlin-dflash-ft are plain DFlashDraftModel (greedy argmax draft), so these lines never run for us.
+   A selector drafter with this patch is still non-deterministic.
+ - Greedy (T=0) needs no coins and is unchanged.
+ - Logit numerics: the patch makes the RNG per-request; the logits themselves still depend on batch
+   composition (see NOTES.txt / G2_PLAN.txt arm c: --enable-deterministic-inference).
+diff --git a/python/sglang/srt/sampling/sampling_batch_info.py b/python/sglang/srt/sampling/sampling_batch_info.py
+--- a/python/sglang/srt/sampling/sampling_batch_info.py
++++ b/python/sglang/srt/sampling/sampling_batch_info.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
+ 
+ import dataclasses
+ import logging
++import os
+ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+ 
+ import torch
+@@ -86,6 +87,11 @@ class SamplingBatchInfo:
+     @classmethod
+     def from_schedule_batch(cls, batch: ScheduleBatch, vocab_size: int):
+         enable_deterministic = get_exec().deterministic.enable_deterministic_inference
++        # [dflash-seed] also build per-request sampling_seed without the
++        # batch-invariant kernels (needs --sampling-backend pytorch).
++        seeded_sampling = enable_deterministic or (
++            os.environ.get("SGLANG_DFLASH_SEEDED_SAMPLING", "0") == "1"
++        )
+ 
+         reqs = batch.reqs
+         device = batch.device
+@@ -127,7 +133,7 @@ class SamplingBatchInfo:
+                 dtype=torch.int64,
+                 pin_memory=_pin,
+             ).to(device, non_blocking=True)
+-            if enable_deterministic
++            if seeded_sampling
+             else None
+         )
+ 
+diff --git a/python/sglang/srt/speculative/dflash_utils.py b/python/sglang/srt/speculative/dflash_utils.py
+--- a/python/sglang/srt/speculative/dflash_utils.py
++++ b/python/sglang/srt/speculative/dflash_utils.py
+@@ -822,6 +822,34 @@ def apply_dflash_simulated_acceptance(
+     out_tokens[:, forced_accept_len].copy_(bonus.to(dtype=out_tokens.dtype))
+ 
+ 
++def dflash_seeded_verify_coins(
++    *,
++    sampling_info: Any,
++    seq_lens: torch.Tensor,
++    draft_token_num: int,
++    device,
++) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
++    """[dflash-seed] Per-request verify coins, same scheme as EAGLE.
++
++    Returns (coins [bs, draft_token_num], final_coins [bs]) derived from
++    murmur_hash32(sampling_seed, seq_lens, column) when sampling_seed is set
++    (EAGLE's _seeded_verify_coins), else (None, None) so the caller keeps the
++    stock torch.rand draws. Coins depend only on the request's own seed and
++    committed length, never on batch order or the global torch generator.
++    """
++    seed = getattr(sampling_info, "sampling_seed", None)
++    if seed is None:
++        return None, None
++    from sglang.srt.speculative.eagle_utils import _seeded_verify_coins
++
++    return _seeded_verify_coins(
++        sampling_seed=seed,
++        seq_lens=seq_lens,
++        draft_token_num=int(draft_token_num),
++        device=device,
++    )
++
++
+ def compute_dflash_sampling_correct_drafts_and_bonus(
+     *,
+     candidates: torch.Tensor,
+diff --git a/python/sglang/srt/speculative/dflash_worker_v2.py b/python/sglang/srt/speculative/dflash_worker_v2.py
+--- a/python/sglang/srt/speculative/dflash_worker_v2.py
++++ b/python/sglang/srt/speculative/dflash_worker_v2.py
+@@ -43,6 +43,7 @@ from sglang.srt.speculative.dflash_utils import (
+     can_dflash_use_fused_qkv_proj,
+     compute_dflash_correct_drafts_and_bonus,
+     compute_dflash_sampling_correct_drafts_and_bonus,
++    dflash_seeded_verify_coins,
+     is_dense_head_weight,
+     is_dflash_sampling_verify_available,
+     parse_dflash_draft_config,
+@@ -2025,12 +2026,21 @@ class DFlashWorkerV2(BaseSpecWorker):
+         elif (
+             not _is_all_greedy(sampling_info) and is_dflash_sampling_verify_available()
+         ):
++            # [dflash-seed] per-request seeded coins (None, None = stock torch.rand)
++            seeded_coins, seeded_final_coins = dflash_seeded_verify_coins(
++                sampling_info=sampling_info,
++                seq_lens=prefix_lens,
++                draft_token_num=int(candidates.shape[1]),
++                device=candidates.device,
++            )
+             accept_len, bonus = compute_dflash_sampling_correct_drafts_and_bonus(
+                 candidates=candidates,
+                 next_token_logits=logits_output.next_token_logits,
+                 sampling_info=sampling_info,
+                 max_top_k=draft_input.max_top_k,
+                 uniform_top_k_value=draft_input.uniform_top_k_value,
++                uniform_samples=seeded_coins,
++                uniform_samples_for_final_sampling=seeded_final_coins,
+             )
+             out_tokens, commit_lens = _commit_accept(candidates, accept_len, bonus)
+         else:

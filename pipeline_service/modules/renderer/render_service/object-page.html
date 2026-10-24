@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self' 'unsafe-inline'; connect-src 'none'; img-src 'none'; style-src 'unsafe-inline';">
+  <style>body { margin: 0; overflow: hidden; }</style>
+</head>
+<body>
+<script type="module">
+import * as THREE from '/three.module.js';
+import { expandScene } from '/scene-codec.mjs';
+
+let _seed = 0x12345678;
+Math.random = () => {
+  _seed |= 0; _seed = _seed + 0x6D2B79F5 | 0;
+  let t = Math.imul(_seed ^ _seed >>> 15, 1 | _seed);
+  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+  return ((t ^ t >>> 14) >>> 0) / 4294967296;
+};
+
+const loader = new THREE.ObjectLoader();
+
+let renderer = null;
+let scene = null;
+let camera = null;
+let followLight = null;
+let lightRig = null;
+let envRT = null;
+let _imgSize = null;
+let _camFovDeg = null;
+let _lighting = null;
+// [jgrid] one rig + PMREM environment per lighting, built once per page and kept while the page lives (a PMREM
+// build costs ~5 s / ~20 CPU-s on SwiftShader). Off mode only ever builds 'neutral', exactly as before.
+const _rigs = {};
+
+function buildFollowRig() {
+  const rig = new THREE.Group();
+  rig.add(new THREE.AmbientLight(0xffffff, 0.4));
+  followLight = new THREE.DirectionalLight(0xffffff, 1.5);
+  rig.add(followLight);
+  return rig;
+}
+
+function buildNeutralRig() {
+  // Camera-follow key light plus a real luminous environment — the PMREM
+  // scene contains emissive surfaces (shell + panels), so metals reflect
+  // something instead of a black void. Mirrors render-pool.js 'neutral'.
+  const rig = new THREE.Group();
+  followLight = new THREE.DirectionalLight(0xffffff, 1.1);
+  rig.add(followLight);
+
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const envScene = new THREE.Scene();
+
+  const shellMat = new THREE.MeshBasicMaterial({ side: THREE.BackSide });
+  shellMat.color.setRGB(0.32, 0.32, 0.32);
+  envScene.add(new THREE.Mesh(new THREE.BoxGeometry(10, 10, 10), shellMat));
+
+  const addPanel = (w, h, intensity, x, y, z, rx, ry) => {
+    const mat = new THREE.MeshBasicMaterial();
+    mat.color.setRGB(intensity, intensity, intensity);
+    const panel = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+    panel.position.set(x, y, z);
+    panel.rotation.set(rx, ry, 0);
+    envScene.add(panel);
+  };
+  addPanel(4, 4, 2.6, 0, 4.9, 0, Math.PI / 2, 0);     // ceiling key panel
+  addPanel(3, 2, 1.4, -4.9, 1.5, 0, 0, Math.PI / 2);  // left fill panel
+  addPanel(3, 2, 1.1, 4.9, 1.0, -1, 0, -Math.PI / 2); // right fill panel
+  addPanel(4, 1.5, 0.9, 0, 1.0, -4.9, 0, 0);          // back rim panel
+
+  envRT = pmrem.fromScene(envScene, 0.04);
+  scene.environment = envRT.texture;
+  scene.environmentIntensity = 0.9;
+  pmrem.dispose();
+  return rig;
+}
+
+function buildStudioRig() {
+  const rig = new THREE.Group();
+  rig.add(new THREE.AmbientLight(0xffffff, 0.12));
+
+  const keyLight = new THREE.DirectionalLight(0xffffff, 1.2);
+  keyLight.position.set(2, 3, 2);
+  rig.add(keyLight);
+
+  const fillLight = new THREE.DirectionalLight(0xffffff, 0.4);
+  fillLight.position.set(-2, 1, 1);
+  rig.add(fillLight);
+
+  const rimLight = new THREE.DirectionalLight(0xffffff, 0.3);
+  rimLight.position.set(0, 2, -3);
+  rig.add(rimLight);
+
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const envScene = new THREE.Scene();
+  envScene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.0));
+  envRT = pmrem.fromScene(envScene, 0.04);
+  scene.environment = envRT.texture;
+  scene.environmentIntensity = 0.8;
+  pmrem.dispose();
+  return rig;
+}
+
+function buildLightRig(lighting) {
+  if (lighting === 'follow') return buildFollowRig();
+  if (lighting === 'neutral') return buildNeutralRig();
+  return buildStudioRig();
+}
+
+function ensureContext(params) {
+  if (renderer === null) {
+    renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      preserveDrawingBuffer: true,
+      alpha: true,
+    });
+    renderer.setPixelRatio(1);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    scene = new THREE.Scene();
+
+    camera = new THREE.PerspectiveCamera(params.camFovDeg, 1.0, 0.01, 100);
+    camera.up.set(0, 1, 0);
+  }
+
+  setLighting(params.lightings ? (params.lightings[0] || params.lighting) : params.lighting);  // [jgrid] first view's
+
+  if (_imgSize !== params.imgSize) {
+    renderer.setSize(params.imgSize, params.imgSize);
+    _imgSize = params.imgSize;
+  }
+  if (_camFovDeg !== params.camFovDeg) {
+    camera.fov = params.camFovDeg;
+    camera.updateProjectionMatrix();
+    _camFovDeg = params.camFovDeg;
+  }
+  scene.background = new THREE.Color(params.bgColor ? `#${params.bgColor}` : 0xffffff);
+}
+
+// [jgrid] the lighting switch of ensureContext as a function (renderView switches per view). A lighting seen before
+// on this page reuses its cached rig + environment (no PMREM build); cached render targets are never disposed, so
+// the environment pointer stays valid. The first build of each lighting runs the original code path unchanged.
+function setLighting(lighting) {
+  if (_lighting !== lighting) {
+    if (lightRig !== null) {
+      scene.remove(lightRig);
+      scene.environment = null;
+      scene.environmentIntensity = 1;
+      followLight = null;
+    }
+    const cached = _rigs[lighting];
+    if (cached) {
+      lightRig = cached.rig;
+      envRT = cached.envRT;
+      scene.environment = cached.envRT ? cached.envRT.texture : null;
+      scene.environmentIntensity = cached.envI;
+      followLight = cached.follow;
+    } else {
+      envRT = null;
+      lightRig = buildLightRig(lighting);
+      _rigs[lighting] = { rig: lightRig, envRT, envI: scene.environmentIntensity, follow: followLight };
+    }
+    scene.add(lightRig);
+    // Mirrors render-pool.js 'neutral': exposure calibrated so an 18% grey
+    // card reads middle grey (~118 sRGB). Mode-scoped, so it must track the
+    // lighting switch on this warm page.
+    renderer.toneMappingExposure = lighting === 'neutral' ? 1.32 : 1.0;
+    _lighting = lighting;
+  }
+}
+
+function sphericalToCartesian(thetaDeg, phiDeg, radius) {
+  const theta = thetaDeg * Math.PI / 180;
+  const phi = phiDeg * Math.PI / 180;
+  return new THREE.Vector3(
+    radius * Math.cos(phi) * Math.sin(theta),
+    -radius * Math.sin(phi),
+    radius * Math.cos(phi) * Math.cos(theta),
+  );
+}
+
+function disposeObject(root) {
+  root.traverse((obj) => {
+    if (obj.geometry) obj.geometry.dispose();
+    const materials = Array.isArray(obj.material) ? obj.material : (obj.material ? [obj.material] : []);
+    for (const mat of materials) {
+      for (const key of Object.keys(mat)) {
+        const value = mat[key];
+        if (value && value.isTexture) value.dispose();
+      }
+      mat.dispose();
+    }
+  });
+}
+
+// Parse scene_json, mount the root and hand off to `render`; always unmounts
+// and disposes afterwards.
+function withParsedRoot(json, params, render) {
+  ensureContext(params);
+
+  expandScene(json);
+  const root = loader.parse(json);
+  if (!root || !root.isObject3D) {
+    return { error: 'parsed scene_json is not an Object3D' };
+  }
+
+  // Lighting is renderer-controlled: Three.js skips `scene.environment` for
+  // any material carrying its own `envMap`, so a serialized envMap would
+  // silently disable image-based lighting for that material. Null only (no
+  // dispose): the strip runs before the first render, so the texture never
+  // reaches the GPU. The onBeforeRender/onAfterRender half of the upstream
+  // traverse is omitted — functions do not survive toJSON()/ObjectLoader,
+  // parsed objects carry only the inert prototype methods.
+  root.traverse((obj) => {
+    const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+    for (const material of materials) {
+      if (material && material.envMap) {
+        material.envMap = null;
+        material.needsUpdate = true;
+      }
+    }
+  });
+
+  scene.add(root);
+  try {
+    return render();
+  } finally {
+    scene.remove(root);
+    disposeObject(root);
+  }
+}
+
+function renderView(i, params) {
+  if (params.lightings) setLighting(params.lightings[i] || params.lighting);  // [jgrid] before size, as in ensureContext
+  const __sz = params.sizes && params.sizes[i] ? params.sizes[i] : params.imgSize;
+  if (__sz !== _imgSize) { renderer.setSize(__sz, __sz); _imgSize = __sz; }
+  if (params.bgs) {
+    const bg = params.bgs[i] || params.bgColor;
+    scene.background = new THREE.Color(bg ? `#${bg}` : 0xffffff);
+  }
+  const pos = sphericalToCartesian(params.thetas[i], params.phis[i], params.camRadius);
+  camera.position.copy(pos);
+  camera.lookAt(0, 0, 0);
+  if (followLight) {
+    followLight.position.copy(pos).add(new THREE.Vector3(1, 1, 0));
+    followLight.lookAt(0, 0, 0);
+  }
+  renderer.render(scene, camera);
+}
+
+window.__renderViews = function (json, params) {
+  try {
+    return withParsedRoot(json, params, () => {
+      const images = [];
+      for (let i = 0; i < params.thetas.length; i++) {
+        renderView(i, params);
+        images.push(renderer.domElement.toDataURL('image/png'));
+      }
+      // PIN: one extra use per program, so material disposal never destroys it (bounded at 256).
+      // [sws] kernel-optim measured this snippet (= patch_object_page.py --pin) with sws-llvm: pixels identical, LLVM
+      // shader recompiles mostly gone. Off only when params.pin === false (sidecar env PGH_RENDER_PIN=0, renderer.js).
+      if (params.pin !== false) {
+        for (const p of renderer.info.programs) {
+          if (!p.__pinned && renderer.info.programs.length <= 256) { p.__pinned = true; p.usedTimes++; }
+        }
+      }
+      return params.lightings ? { data: images, lightings_applied: true } : { data: images };  // [jgrid] F4
+    });
+  } catch (err) {
+    return { error: err.message || String(err) };
+  }
+};
+
+window.__ready = true;
+</script>
+</body>
+</html>
